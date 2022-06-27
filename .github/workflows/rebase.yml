@@ -17,3 +17,5 @@ jobs:
       with:
         gpg-key: ${{ secrets.TRADESHIFTCI_GPG_KEY }}  
     - uses: tradeshift/rebase-upstream-action@master
+      with:
+        branch: main
