@@ -1,8 +1,8 @@
 import * as core from '@actions/core'
 import * as github from '@actions/github'
-import {annotateTestResult, attachSummary} from './annotator'
+import {annotateTestResult, attachSummary, buildSummaryTables} from './annotator'
 import {parseTestReports, TestResult} from './testParser'
-import {readTransformers, retrieve} from './utils'
+import {buildTable, readTransformers, retrieve} from './utils'
 
 export async function run(): Promise<void> {
   try {
@@ -16,6 +16,7 @@ export async function run(): Promise<void> {
 
     const annotateOnly = core.getInput('annotate_only') === 'true'
     const updateCheck = core.getInput('update_check') === 'true'
+    const checkAnnotations = core.getInput('check_annotations') === 'true'
     const commit = core.getInput('commit')
     const failOnFailure = core.getInput('fail_on_failure') === 'true'
     const requireTests = core.getInput('require_tests') === 'true'
@@ -25,6 +26,7 @@ export async function run(): Promise<void> {
     const annotateNotice = core.getInput('annotate_notice') === 'true'
     const jobSummary = core.getInput('job_summary') === 'true'
     const detailedSummary = core.getInput('detailed_summary') === 'true'
+    const flakySummary = core.getInput('flaky_summary') === 'true'
     const jobName = core.getInput('job_name')
 
     const reportPaths = core.getMultilineInput('report_paths')
@@ -34,9 +36,11 @@ export async function run(): Promise<void> {
     const suiteRegex = core.getMultilineInput('suite_regex')
     let excludeSources = core.getMultilineInput('exclude_sources') ? core.getMultilineInput('exclude_sources') : []
     const checkTitleTemplate = core.getMultilineInput('check_title_template')
+    const breadCrumbDelimiter = core.getInput('bread_crumb_delimiter')
     const transformers = readTransformers(core.getInput('transformers', {trimWhitespace: true}))
     const followSymlink = core.getBooleanInput('follow_symlink')
     const annotationsLimit = Number(core.getInput('annotations_limit') || -1)
+    const truncateStackTraces = core.getBooleanInput('truncate_stack_traces')
 
     if (excludeSources.length === 0) {
       excludeSources = ['/build/', '/__pycache__/']
@@ -55,10 +59,11 @@ export async function run(): Promise<void> {
       skipped: 0,
       failed: 0,
       passed: 0,
+      foundFiles: 0,
       annotations: []
     }
 
-    core.info(`Retrieved ${reportsCount} reports to process.`)
+    core.info(`Preparing ${reportsCount} report as configured.`)
 
     for (let i = 0; i < reportsCount; i++) {
       const testResult = await parseTestReports(
@@ -66,16 +71,17 @@ export async function run(): Promise<void> {
         retrieve('summary', summary, i, reportsCount),
         retrieve('reportPaths', reportPaths, i, reportsCount),
         retrieve('suiteRegex', suiteRegex, i, reportsCount),
-        includePassed && annotateNotice,
+        includePassed,
         checkRetries,
         excludeSources,
         retrieve('checkTitleTemplate', checkTitleTemplate, i, reportsCount),
+        breadCrumbDelimiter,
         retrieve('testFilesPrefix', testFilesPrefix, i, reportsCount),
         transformers,
         followSymlink,
-        annotationsLimit
+        annotationsLimit,
+        truncateStackTraces
       )
-
       mergedResult.totalCount += testResult.totalCount
       mergedResult.skipped += testResult.skipped
       mergedResult.failed += testResult.failed
@@ -107,7 +113,16 @@ export async function run(): Promise<void> {
 
     try {
       for (const testResult of testResults) {
-        await annotateTestResult(testResult, token, headSha, annotateOnly, updateCheck, annotateNotice, jobName)
+        await annotateTestResult(
+          testResult,
+          token,
+          headSha,
+          checkAnnotations,
+          annotateOnly,
+          updateCheck,
+          annotateNotice,
+          jobName
+        )
       }
     } catch (error) {
       core.error(`❌ Failed to create checks using the provided token. (${error})`)
@@ -117,9 +132,15 @@ export async function run(): Promise<void> {
     }
 
     const supportsJobSummary = process.env['GITHUB_STEP_SUMMARY']
+    const [table, detailTable, flakyTable] = buildSummaryTables(
+      testResults,
+      includePassed,
+      detailedSummary,
+      flakySummary
+    )
     if (jobSummary && supportsJobSummary) {
       try {
-        await attachSummary(testResults, detailedSummary, includePassed)
+        await attachSummary(table, detailTable, flakyTable)
       } catch (error) {
         core.error(`❌ Failed to set the summary using the provided token. (${error})`)
       }
@@ -128,6 +149,10 @@ export async function run(): Promise<void> {
     } else {
       core.info('⏩ Skipped creation of job summary')
     }
+
+    core.setOutput('summary', buildTable(table))
+    core.setOutput('detailed_summary', buildTable(detailTable))
+    core.setOutput('flaky_summary', buildTable(flakyTable))
 
     if (failOnFailure && conclusion === 'failure') {
       core.setFailed(`❌ Tests reported ${mergedResult.failed} failures`)
