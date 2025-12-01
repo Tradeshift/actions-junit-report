@@ -38,7 +38,7 @@
     "xml-js": "^1.6.11"
   },
   "devDependencies": {
-    "@eslint/eslintrc": "^3.3.1",
+    "@eslint/eslintrc": "^3.3.3",
     "@eslint/js": "^9.33.0",
     "@types/jest": "^30.0.0",
     "@types/node": "^24.2.1",
